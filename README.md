@@ -68,7 +68,42 @@ To find chat IDs, you can:
 
 You can use tools like [@userinfobot](https://t.me/userinfobot) or [@get_id_bot](https://t.me/get_id_bot) to get chat IDs.
 
-## Usage
+## Bot Menu and Deployment (current)
+
+Rules are managed from a Telegram bot menu instead of the `.env` file. The forwarding itself still runs on your **user account**, because only a user account can read the source channels. The bot is just the settings interface.
+
+> The sections below this one (`Usage`, `Configuration Options`, `-r` flag, bot mode) describe the older env-based setup. In the current version the `-r` flag is the "Hapus Signature" button in the menu, and `FORWARDING_RULES` is only imported once when the database is empty.
+
+### Setup
+
+1. Create a control bot with [@BotFather](https://t.me/BotFather) and copy its token.
+2. Send `/id` to that bot to get your Telegram user ID.
+3. Generate the login of the forwarding account (run locally, needs your phone for the code):
+   ```bash
+   python generate_session.py
+   ```
+4. Set these variables: `API_ID`, `API_HASH`, `BOT_TOKEN`, `ADMIN_IDS`, `SESSION_STRING` (see `.env.example`).
+5. Run `python telegram_forwarder.py`, then send `/menu` to your bot.
+
+### Menu
+
+- **Tambah Rule**: pick the source and the target from your chats, or type an ID / @username / t.me link, or forward a message from the chat.
+- **Daftar Rule** and **Hapus Rule**
+- **Hapus Signature**: send as new messages instead of forwarding (keeps text formatting and albums)
+- **Jeda / Lanjutkan**: pause forwarding without deleting rules
+
+Only the user IDs in `ADMIN_IDS` can use the bot. The forwarding account must be a member of every source and target chat.
+
+### Deploy with Dokploy
+
+1. Create an application from this Git repository and choose the **Dockerfile** build type (or a Docker Compose service using `docker-compose.yml`).
+2. Add the environment variables `API_ID`, `API_HASH`, `BOT_TOKEN`, `ADMIN_IDS`, `SESSION_STRING`.
+3. Add a persistent volume mounted at `/data`. It holds the rules database; without it the rules are lost on every redeploy.
+4. Deploy, then send `/menu` to the bot.
+
+Do not run the same `SESSION_STRING` in two places at once (for example locally and on the VPS). Telegram can invalidate a session used from two locations. Stop the local copy first, or generate a separate string.
+
+## Usage (legacy)
 
 Run the script with various options:
 
@@ -90,7 +125,6 @@ python telegram_forwarder.py -r -q
 
 | Argument | Short | Description |
 |----------|-------|-------------|
-| `--remove-forward-signature` | `-r` | Remove "Forward from..." signature by sending as new messages instead of forwarding |
 | `--disable-console-log` | `-q` | Disable console logging (only log to telegram_forwarder.log file) |
 
 ### First Run

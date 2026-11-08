@@ -148,3 +148,6 @@ dmypy.json
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Forwarder database
+*.db

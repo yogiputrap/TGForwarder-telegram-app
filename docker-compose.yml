@@ -1,0 +1,15 @@
+services:
+  forwarder:
+    build: .
+    restart: unless-stopped
+    environment:
+      API_ID: ${API_ID}
+      API_HASH: ${API_HASH}
+      BOT_TOKEN: ${BOT_TOKEN}
+      ADMIN_IDS: ${ADMIN_IDS}
+      SESSION_STRING: ${SESSION_STRING}
+    volumes:
+      - forwarder-data:/data
+
+volumes:
+  forwarder-data:
