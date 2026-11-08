@@ -153,6 +153,26 @@ async def seed_legacy_rules(client, db):
         logger.info(f"Imported rule from environment: {titles[0]} -> {titles[1]}")
 
 
+async def start_health_server():
+    """Answer 200 on $PORT, because some hosts treat an app that listens on no port as failed."""
+    port = os.getenv('PORT')
+    if not port:
+        return None
+
+    async def handle(reader, writer):
+        try:
+            await asyncio.wait_for(reader.read(1024), timeout=2)
+        except asyncio.TimeoutError:
+            pass
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, '0.0.0.0', int(port))
+    logger.info(f"Health check listening on port {port}")
+    return server
+
+
 def load_admin_ids():
     return {int(x) for x in os.getenv('ADMIN_IDS', '').replace(' ', '').split(',') if x}
 
@@ -188,6 +208,8 @@ async def main():
     user_client = TelegramClient(user_session, int(api_id), api_hash)
     bot_client = TelegramClient(os.path.join(DATA_DIR, 'bot_session'), int(api_id), api_hash)
 
+    health_server = await start_health_server()
+
     try:
         await user_client.connect()
         if not await user_client.is_user_authorized():
@@ -211,6 +233,8 @@ async def main():
     except Exception as e:
         logger.error(f"Application error: {e}")
     finally:
+        if health_server:
+            health_server.close()
         await user_client.disconnect()
         await bot_client.disconnect()
         logger.info("Clients disconnected")
