@@ -1,7 +1,9 @@
 import html
 import logging
+import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from telethon import Button, events, utils
 from telethon.errors import MessageNotModifiedError
 
@@ -12,6 +14,7 @@ class BotMenu:
     """Settings menu for the forwarder, operated through a Telegram bot by the admins only."""
 
     PAGE_SIZE = 8
+    LOG_ENTRIES = 15
     DIALOG_CACHE_SECONDS = 300
 
     def __init__(self, bot, user, db, forwarder, admin_ids):
@@ -25,6 +28,8 @@ class BotMenu:
         self._dialogs = []
         self._dialogs_loaded_at = 0
         self.bot.parse_mode = 'html'
+        # Containers run in UTC, so show times in the configured offset (default WIB, UTC+7)
+        self.tz = timezone(timedelta(hours=float(os.getenv('TZ_OFFSET_HOURS', '7'))))
 
     def register(self):
         self.bot.add_event_handler(self.on_id, events.NewMessage(pattern=r'^/id(@\w+)?$'))
@@ -49,7 +54,7 @@ class BotMenu:
                 f"Hapus tanda \"Forwarded from\": {signature}")
         buttons = [
             [Button.inline('📋 Daftar Rule', b'm:list'), Button.inline('➕ Tambah Rule', b'm:add')],
-            [Button.inline('🗑 Hapus Rule', b'm:del')],
+            [Button.inline('🗑 Hapus Rule', b'm:del'), Button.inline('📜 Log', b'm:log')],
             [Button.inline(f'✂️ Hapus Signature: {signature}', b'm:sig'),
              Button.inline('▶️ Lanjutkan' if not enabled else '⏸ Jeda', b'm:pause')],
         ]
@@ -71,6 +76,26 @@ class BotMenu:
                  for i, r in enumerate(rules, 1)]
         text = "<b>Daftar Rule</b>\n\n" + "\n".join(lines)
         return text if len(text) < 3900 else text[:3900].rsplit("\n", 1)[0] + "\n..."  # Telegram limit is 4096
+
+    def _log_text(self):
+        now = datetime.now(self.tz)
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        sent, failed = self.db.activity_counts(int(midnight.timestamp()))
+        lines = [f"<b>Log Aktivitas</b>  <i>(diperbarui {now:%H:%M:%S})</i>",
+                 f"Hari ini: ✅ {sent} terkirim · ❌ {failed} gagal", ""]
+
+        entries = self.db.recent_activity(self.LOG_ENTRIES)
+        if not entries:
+            lines.append("Belum ada aktivitas.")
+        for e in entries:
+            when = datetime.fromtimestamp(e['ts'], self.tz).strftime('%d/%m %H:%M:%S')
+            route = f"{e['source_title'] or e['source_id']} → {e['target_title'] or e['target_id']}"
+            count = f" ({e['messages']} pesan)" if e['messages'] > 1 else ""
+            line = f"{when} {'✅' if e['ok'] else '❌'} {html.escape(route, quote=False)}{count}"
+            if not e['ok']:
+                line += f"\n    <i>{html.escape(e['detail'][:80], quote=False)}</i>"
+            lines.append(line)
+        return "\n".join(lines)
 
     async def _load_dialogs(self):
         if time.time() - self._dialogs_loaded_at > self.DIALOG_CACHE_SECONDS:
@@ -146,6 +171,12 @@ class BotMenu:
             self.states[user_id] = {'step': 'source'}
             text, buttons = await self._picker('source', 0)
             await event.edit(text, buttons=buttons)
+
+        elif data in ('m:log', 'm:logclr'):
+            if data == 'm:logclr':
+                self.db.clear_activity()
+            buttons = [[Button.inline('🔄 Refresh', b'm:log'), Button.inline('🗑 Bersihkan', b'm:logclr')]]
+            await event.edit(self._log_text(), buttons=buttons + self._back())
 
         elif data == 'm:list':
             await event.edit(self._rules_text(), buttons=self._back())

@@ -73,8 +73,10 @@ class TelegramForwarder:
             try:
                 await self._deliver(source_id, target_id, messages, remove_signature)
                 logger.info(f"Successfully forwarded {len(messages)} message(s) {source_id} -> {target_id}")
+                self.db.log_activity(source_id, target_id, len(messages), True)
             except Exception as e:
                 logger.error(f"Error forwarding {source_id} -> {target_id}: {e}")
+                self.db.log_activity(source_id, target_id, len(messages), False, str(e)[:200])
 
     async def _deliver(self, source_id, target_id, messages, remove_signature):
         """Send to one target, waiting out Telegram rate limits."""

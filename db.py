@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import time
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS rules (
@@ -10,11 +11,25 @@ CREATE TABLE IF NOT EXISTS rules (
     target_title TEXT NOT NULL DEFAULT '',
     UNIQUE (source_id, target_id)
 );
+CREATE TABLE IF NOT EXISTS activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts INTEGER NOT NULL,
+    source_id INTEGER NOT NULL,
+    target_id INTEGER NOT NULL,
+    source_title TEXT NOT NULL DEFAULT '',
+    target_title TEXT NOT NULL DEFAULT '',
+    messages INTEGER NOT NULL DEFAULT 1,
+    ok INTEGER NOT NULL,
+    detail TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 """
+
+
+MAX_ACTIVITY = 500
 
 
 class Database:
@@ -66,4 +81,37 @@ class Database:
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, str(value)),
         )
+        self.conn.commit()
+
+    def log_activity(self, source_id, target_id, messages, ok, detail=''):
+        """Record one forwarding attempt, keeping only the most recent entries."""
+        rule = self.conn.execute(
+            "SELECT source_title, target_title FROM rules WHERE source_id = ? AND target_id = ?",
+            (source_id, target_id),
+        ).fetchone()
+        self.conn.execute(
+            "INSERT INTO activity (ts, source_id, target_id, source_title, target_title, messages, ok, detail) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (int(time.time()), source_id, target_id, rule['source_title'] if rule else '',
+             rule['target_title'] if rule else '', messages, int(ok), detail),
+        )
+        self.conn.execute(
+            "DELETE FROM activity WHERE id <= (SELECT MAX(id) FROM activity) - ?", (MAX_ACTIVITY,)
+        )
+        self.conn.commit()
+
+    def recent_activity(self, limit=15):
+        return self.conn.execute("SELECT * FROM activity ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+    def activity_counts(self, since_ts):
+        """Return (sent, failed) message counts since the given unix time."""
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(CASE WHEN ok = 1 THEN messages END), 0) AS sent, "
+            "COALESCE(SUM(CASE WHEN ok = 0 THEN messages END), 0) AS failed "
+            "FROM activity WHERE ts >= ?", (since_ts,),
+        ).fetchone()
+        return row['sent'], row['failed']
+
+    def clear_activity(self):
+        self.conn.execute("DELETE FROM activity")
         self.conn.commit()
