@@ -228,7 +228,9 @@ async def main():
         forwarder.register_handlers()
 
         await bot_client.start(bot_token=bot_token)
-        BotMenu(bot_client, user_client, db, forwarder, admin_ids).register()
+        menu = BotMenu(bot_client, user_client, db, forwarder, admin_ids)
+        menu.register()
+        await menu.setup_commands()
         logger.info("Telegram forwarder is now running. Press Ctrl+C to stop.")
 
         await asyncio.gather(user_client.run_until_disconnected(), bot_client.run_until_disconnected())

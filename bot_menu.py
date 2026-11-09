@@ -6,6 +6,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from telethon import Button, events, utils
 from telethon.errors import MessageNotModifiedError
+from telethon.tl.functions.bots import SetBotCommandsRequest
+from telethon.tl.types import BotCommand, BotCommandScopeDefault
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,18 @@ class BotMenu:
     PAGE_SIZE = 8
     LOG_ENTRIES = 15
     DIALOG_CACHE_SECONDS = 300
+
+    # Persistent keyboard shown under the message box; each label maps to an action
+    KEYBOARD_ROWS = [
+        ['📋 Daftar Rule', '➕ Tambah Rule'],
+        ['🗑 Hapus Rule', '📜 Log'],
+        ['✂️ Signature', '⏯ Jeda / Lanjut'],
+        ['🏠 Menu'],
+    ]
+    KEYBOARD_ACTIONS = {
+        '📋 Daftar Rule': 'list', '➕ Tambah Rule': 'add', '🗑 Hapus Rule': 'del', '📜 Log': 'log',
+        '✂️ Signature': 'sig', '⏯ Jeda / Lanjut': 'pause', '🏠 Menu': 'home',
+    }
 
     def __init__(self, bot, user, db, forwarder, admin_ids):
         self.bot = bot
@@ -38,6 +52,16 @@ class BotMenu:
         self.bot.add_event_handler(self.on_callback, events.CallbackQuery())
         logger.info("Bot menu registered")
 
+    async def setup_commands(self):
+        """Fill the menu button (the list next to the message box) with the bot commands."""
+        try:
+            await self.bot(SetBotCommandsRequest(
+                scope=BotCommandScopeDefault(), lang_code='',
+                commands=[BotCommand('menu', 'Buka menu'), BotCommand('id', 'Lihat ID Telegram kamu')],
+            ))
+        except Exception as e:
+            logger.warning(f"Could not set bot commands: {e}")
+
     def _is_admin_text(self, event):
         return (event.is_private and event.sender_id in self.admin_ids
                 and not (event.raw_text or '').startswith('/'))
@@ -59,6 +83,26 @@ class BotMenu:
              Button.inline('▶️ Lanjutkan' if not enabled else '⏸ Jeda', b'm:pause')],
         ]
         return text, buttons
+
+    def _keyboard(self):
+        return [[Button.text(label, resize=True) for label in row] for row in self.KEYBOARD_ROWS]
+
+    def _delete_view(self):
+        rules = self.db.list_rules()
+        if not rules:
+            return "Belum ada rule.", self._back()
+        buttons = [[Button.inline(f"🗑 {self._rule_label(r)}"[:60], f"d:{r['id']}".encode())] for r in rules]
+        return "<b>Pilih rule yang dihapus</b>", buttons + self._back()
+
+    def _log_view(self):
+        buttons = [[Button.inline('🔄 Refresh', b'm:log'), Button.inline('🗑 Bersihkan', b'm:logclr')]]
+        return self._log_text(), buttons + self._back()
+
+    def _toggle(self, key):
+        """Flip a 1/0 setting and return the new value as a bool."""
+        new = '0' if self.db.get_setting(key, '1') == '1' else '1'
+        self.db.set_setting(key, new)
+        return new == '1'
 
     @staticmethod
     def _back():
@@ -140,6 +184,8 @@ class BotMenu:
                                 f"Tambahkan ke ADMIN_IDS untuk memakai bot ini.")
             return
         self.states.pop(event.sender_id, None)
+        # A message carries either a reply keyboard or inline buttons, so send them separately
+        await event.respond("Gunakan tombol menu di bawah ⬇️", buttons=self._keyboard())
         text, buttons = self._main_menu()
         await event.respond(text, buttons=buttons)
 
@@ -175,8 +221,8 @@ class BotMenu:
         elif data in ('m:log', 'm:logclr'):
             if data == 'm:logclr':
                 self.db.clear_activity()
-            buttons = [[Button.inline('🔄 Refresh', b'm:log'), Button.inline('🗑 Bersihkan', b'm:logclr')]]
-            await event.edit(self._log_text(), buttons=buttons + self._back())
+            text, buttons = self._log_view()
+            await event.edit(text, buttons=buttons)
 
         elif data == 'm:list':
             await event.edit(self._rules_text(), buttons=self._back())
@@ -187,12 +233,8 @@ class BotMenu:
             await event.edit(text, buttons=buttons)
 
         elif data == 'm:del':
-            rules = self.db.list_rules()
-            if not rules:
-                await event.edit("Belum ada rule.", buttons=self._back())
-                return
-            buttons = [[Button.inline(f"🗑 {self._rule_label(r)}"[:60], f"d:{r['id']}".encode())] for r in rules]
-            await event.edit("<b>Pilih rule yang dihapus</b>", buttons=buttons + self._back())
+            text, buttons = self._delete_view()
+            await event.edit(text, buttons=buttons)
 
         elif action == 'd':
             rule = self.db.get_rule(int(arg))
@@ -208,14 +250,12 @@ class BotMenu:
             await event.edit("✅ Rule dihapus.", buttons=self._back())
 
         elif data == 'm:sig':
-            current = self.db.get_setting('remove_signature', '1')
-            self.db.set_setting('remove_signature', '0' if current == '1' else '1')
+            self._toggle('remove_signature')
             text, buttons = self._main_menu()
             await event.edit(text, buttons=buttons)
 
         elif data == 'm:pause':
-            current = self.db.get_setting('enabled', '1')
-            self.db.set_setting('enabled', '0' if current == '1' else '1')
+            self._toggle('enabled')
             text, buttons = self._main_menu()
             await event.edit(text, buttons=buttons)
 
@@ -242,6 +282,15 @@ class BotMenu:
     async def on_text(self, event):
         """Typed or forwarded input while the admin is choosing a source or target."""
         user_id = event.sender_id
+        action = self.KEYBOARD_ACTIONS.get((event.raw_text or '').strip())
+        if action:
+            try:
+                await self._keyboard_action(event, user_id, action)
+            except Exception as e:
+                logger.error(f"Keyboard action error ({action}): {e}")
+                await event.respond(f"❌ Gagal: {html.escape(str(e))}")
+            return
+
         state = self.states.get(user_id)
         if not state:
             await event.respond("Ketik /menu untuk membuka menu.")
@@ -258,6 +307,32 @@ class BotMenu:
         except Exception as e:
             logger.error(f"Error adding rule: {e}")
             await event.respond(f"❌ Gagal: {html.escape(str(e))}")
+
+    async def _keyboard_action(self, event, user_id, action):
+        """Handle a tap on the persistent keyboard. Pressing one also cancels an add-rule in progress."""
+        self.states.pop(user_id, None)
+
+        if action == 'home':
+            text, buttons = self._main_menu()
+            await event.respond(text, buttons=buttons)
+        elif action == 'list':
+            await event.respond(self._rules_text(), buttons=self._back())
+        elif action == 'add':
+            self.states[user_id] = {'step': 'source'}
+            text, buttons = await self._picker('source', 0)
+            await event.respond(text, buttons=buttons)
+        elif action == 'del':
+            text, buttons = self._delete_view()
+            await event.respond(text, buttons=buttons)
+        elif action == 'log':
+            text, buttons = self._log_view()
+            await event.respond(text, buttons=buttons)
+        elif action == 'sig':
+            on = self._toggle('remove_signature')
+            await event.respond(f"✂️ Hapus tanda \"Forwarded from\": <b>{'ON' if on else 'OFF'}</b>")
+        elif action == 'pause':
+            on = self._toggle('enabled')
+            await event.respond("🟢 Forwarding berjalan" if on else "⏸ Forwarding dijeda")
 
     async def _resolve(self, message):
         """Turn typed text, a t.me link or a forwarded message into (peer_id, title) using the user account."""
